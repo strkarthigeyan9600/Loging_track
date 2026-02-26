@@ -268,7 +268,8 @@
                         <th>Time</th>
                         <th>Device</th>
                         <th>User</th>
-                        <th>File</th>
+                        <th>File Name</th>
+                        <th>Full Path</th>
                         <th>Action</th>
                         <th>Size</th>
                         <th>Process</th>
@@ -394,6 +395,20 @@
         return `<span class="badge ${cls}">${flag}</span>`;
     }
 
+    function actionBadge(action) {
+        const colors = {
+            'Create': 'background:rgba(46,204,113,0.15);color:#2ecc71',
+            'Write': 'background:rgba(52,152,219,0.15);color:#3498db',
+            'Delete': 'background:rgba(231,76,60,0.15);color:#e74c3c',
+            'Rename': 'background:rgba(243,156,18,0.15);color:#f39c12',
+            'Read': 'background:rgba(155,89,182,0.15);color:#9b59b6',
+            'Copy': 'background:rgba(26,188,156,0.15);color:#1abc9c',
+            'Move': 'background:rgba(241,196,15,0.15);color:#f1c40f'
+        };
+        const style = colors[action] || 'background:rgba(149,165,166,0.15);color:#95a5a6';
+        return `<span class="badge" style="${style}">${action || 'Unknown'}</span>`;
+    }
+
     async function fetchJSON(url) {
         try {
             const res = await fetch(url);
@@ -474,13 +489,14 @@
                     <td class="mono">${formatTime(f.timestamp)}</td>
                     <td class="mono">${escapeHtml(f.deviceId)}</td>
                     <td>${escapeHtml(f.user)}</td>
-                    <td title="${escapeHtml(f.fullPath)}">${escapeHtml(f.fileName)}</td>
-                    <td>${escapeHtml(f.actionType)}</td>
+                    <td><strong>${escapeHtml(f.fileName)}</strong></td>
+                    <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(f.fullPath)}">${escapeHtml(f.fullPath)}</td>
+                    <td>${actionBadge(f.actionType)}</td>
                     <td>${formatBytes(f.fileSize)}</td>
                     <td>${escapeHtml(f.processName)}</td>
                     <td>${flagBadge(f.flag)}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="8" class="empty-state">No file events</td></tr>';
+            `).join('') || '<tr><td colspan="9" class="empty-state">No file events</td></tr>';
         }
 
         // Network Events

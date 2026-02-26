@@ -39,6 +39,56 @@ public sealed class InMemoryStore
 
     // ──────── File Events ────────
 
+    /// <summary>
+    /// Noisy path fragments filtered server-side — ensures clean data even from
+    /// old agents that don't have client-side filtering.
+    /// </summary>
+    private static readonly string[] _noisyPaths =
+    [
+        @"\AppData\",
+        @"\.git\",
+        @"\.vs\",
+        @"\node_modules\",
+        @"\obj\Debug",
+        @"\obj\Release",
+        @"\bin\Debug",
+        @"\bin\Release",
+        @"\__pycache__\",
+        @"\$Recycle.Bin\",
+        @"\System Volume Information\",
+        @"\ProgramData\LogSystem\",
+    ];
+
+    private static readonly HashSet<string> _noisyExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".vscdb", ".vscdb-journal", ".ldb", ".lock", ".dat",
+        ".sqlite-journal", ".sqlite-shm", ".sqlite-wal",
+        ".crswap", ".partial", ".pma", ".blf", ".regtrans-ms",
+        ".etl", ".pf", ".tmp", ".log",
+    };
+
+    private static bool IsNoisyFile(FileEventEntity e)
+    {
+        if (string.IsNullOrEmpty(e.FullPath)) return false;
+
+        // Check noisy paths
+        foreach (var p in _noisyPaths)
+            if (e.FullPath.Contains(p, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+        // Check noisy extensions
+        var ext = Path.GetExtension(e.FullPath);
+        if (!string.IsNullOrEmpty(ext) && _noisyExtensions.Contains(ext))
+            return true;
+
+        // Skip hidden/temp files (start with ~ or .)
+        var name = Path.GetFileName(e.FullPath);
+        if (!string.IsNullOrEmpty(name) && (name.StartsWith('~') || name.StartsWith('.')))
+            return true;
+
+        return false;
+    }
+
     public void AddFileEvents(IEnumerable<FileEventEntity> events)
     {
         foreach (var e in events)
@@ -47,7 +97,9 @@ public sealed class InMemoryStore
 
     public List<FileEventEntity> GetFileEvents(Timestamp cutoff, string? deviceId = null, string? flag = null, int limit = 200)
     {
-        var results = _fileEvents.Values.Where(e => e.Timestamp >= cutoff);
+        var results = _fileEvents.Values
+            .Where(e => e.Timestamp >= cutoff)
+            .Where(e => !IsNoisyFile(e));   // ← filter noise server-side
 
         if (!string.IsNullOrEmpty(deviceId))
             results = results.Where(e => e.DeviceId == deviceId);
@@ -59,7 +111,10 @@ public sealed class InMemoryStore
 
     public int CountFileEvents(Timestamp cutoff, string? flagFilter = null)
     {
-        var results = _fileEvents.Values.Where(e => e.Timestamp >= cutoff);
+        var results = _fileEvents.Values
+            .Where(e => e.Timestamp >= cutoff)
+            .Where(e => !IsNoisyFile(e));   // ← filter noise server-side
+
         if (!string.IsNullOrEmpty(flagFilter))
             results = results.Where(e => e.Flag == flagFilter);
         return results.Count();
