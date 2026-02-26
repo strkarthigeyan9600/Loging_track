@@ -24,7 +24,17 @@ public class FileMonitorConfig
     public bool MonitorUsb { get; set; } = true;
     public bool MonitorNetworkShares { get; set; } = true;
     public List<string> ExcludedExtensions { get; set; } = [".tmp", ".log", ".etl"];
-    public int InternalBufferSize { get; set; } = 65536;
+    /// <summary>
+    /// Path substrings to exclude (case-insensitive). Any file whose full path
+    /// contains one of these substrings will be silently skipped.
+    /// </summary>
+    public List<string> ExcludedPaths { get; set; } = [];
+    /// <summary>
+    /// When true, also watch user-profile folders (Desktop, Documents, Downloads,
+    /// Pictures, Videos, Music) automatically — even if they are not listed in WatchPaths.
+    /// </summary>
+    public bool AutoWatchUserFolders { get; set; } = true;
+    public int InternalBufferSize { get; set; } = 262144; // 256 KB default
 }
 
 public class AppMonitorConfig
