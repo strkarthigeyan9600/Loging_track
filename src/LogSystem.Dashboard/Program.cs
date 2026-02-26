@@ -43,6 +43,8 @@ var firestoreDb = new FirestoreDbBuilder
 
 builder.Services.AddSingleton(firestoreDb);
 builder.Services.AddSingleton<FirestoreService>();
+builder.Services.AddSingleton<InMemoryStore>();
+builder.Services.AddMemoryCache();
 
 // Controllers — with Firestore Timestamp JSON converter and error handling
 builder.Services.AddControllers(opts =>
