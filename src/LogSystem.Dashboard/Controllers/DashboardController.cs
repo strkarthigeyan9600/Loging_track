@@ -54,17 +54,18 @@ public class DashboardController : ControllerBase
         return Ok(_store.GetFileEvents(cutoff, deviceId, flag, limit));
     }
 
-    // ─── File Transfers (USB / Network / Cloud) ───
+    // ─── File Transfers (USB / Type-C / Network / Cloud / Internet Downloads / App / MTP) ───
 
     [HttpGet("transfers")]
     public IActionResult GetTransfers(
         [FromQuery] string? deviceId = null,
         [FromQuery] string? source = null,
+        [FromQuery] string? direction = null,
         [FromQuery] int hours = 24,
         [FromQuery] int limit = 200)
     {
         var cutoff = Timestamp.FromDateTime(DateTime.UtcNow.AddHours(-hours));
-        return Ok(_store.GetTransferEvents(cutoff, deviceId, source, limit));
+        return Ok(_store.GetTransferEvents(cutoff, deviceId, source, direction, limit));
     }
 
     // ─── Network Events ───

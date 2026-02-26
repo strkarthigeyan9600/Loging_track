@@ -332,15 +332,19 @@ public sealed class FileMonitorService : IDisposable
             // Determine the process that triggered this (best-effort)
             var processName = GetLikelyProcess();
 
-            // ── Transfer detection ──
-            // A Create / Write on a USB or network or cloud drive is a TRANSFER
+            // ── Known browser process names ──
+            var browserProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "chrome", "brave", "msedge", "firefox", "opera", "vivaldi", "chromium", "iexplore", "safari" };
+
+            // ── Transfer / source detection ──
             var flag = "Normal";
             var effectiveAction = actionType;
+            bool isTransfer = false;
+            string direction = "Unknown";
 
-            if (isTransferSource && (actionType == FileActionType.Create || actionType == FileActionType.Write))
+            // 1) Activity on USB / Network / Cloud folders (The watcher is ON the external device)
+            if (isTransferSource)
             {
-                // File appearing on USB/Network/Cloud = it's being transferred there
-                effectiveAction = FileActionType.Copy; // It's really a transfer (copy to destination)
                 flag = source switch
                 {
                     "USB" => "UsbTransfer",
@@ -349,19 +353,60 @@ public sealed class FileMonitorService : IDisposable
                     _ => "Normal"
                 };
 
-                _logger.LogWarning("TRANSFER DETECTED [{Source}]: {File} ({Size} bytes) by {Process}",
-                    source, fileName, fileSize, processName);
+                if (actionType is FileActionType.Create or FileActionType.Write)
+                {
+                    // Created on USB = Copied TO USB (Outgoing)
+                    effectiveAction = FileActionType.Copy;
+                    isTransfer = true;
+                    direction = "Outgoing";
+                    _logger.LogWarning("TRANSFER DETECTED (Outgoing): {File} ({Size} bytes) TO {Source} by {Process}",
+                        fileName, fileSize, source, processName);
+                }
+                else if (actionType is FileActionType.Delete)
+                {
+                    // Deleted from USB
+                    direction = "DeleteExternal";
+                }
             }
-            else if (isTransferSource && actionType == FileActionType.Delete)
+
+            // 2) Internet download: browser process creates/writes a file in Downloads or Desktop
+            else if (browserProcesses.Contains(processName)
+                     && (actionType is FileActionType.Create or FileActionType.Write)
+                     && fileSize > 0)
             {
-                // File deleted from USB/Network = someone removed it from the transfer medium
-                flag = source switch
-                {
-                    "USB" => "UsbTransfer",
-                    "NetworkShare" => "NetworkTransfer",
-                    "CloudSync" => "CloudSyncTransfer",
-                    _ => "Normal"
-                };
+                flag = "InternetDownload";
+                effectiveAction = FileActionType.Copy;
+                isTransfer = true;
+                direction = "Incoming";
+                _logger.LogWarning("INTERNET DOWNLOAD: {File} ({Size} bytes) via {Browser}",
+                    fileName, fileSize, processName);
+            }
+
+            // 3) Cross-correlation: file appeared locally while external drive connected
+            else if (_knownDrives.Count > 0
+                     && actionType == FileActionType.Create
+                     && fileSize > 0)
+            {
+                flag = "ProbableUsbTransfer";
+                effectiveAction = FileActionType.Copy;
+                isTransfer = true;
+                direction = "Incoming"; // USB connected, file created on C: -> Assume copied FROM USB
+                _logger.LogWarning(
+                    "PROBABLE USB TRANSFER (Incoming): {File} ({Size} bytes) by {Process} — drives: {Drives}",
+                    fileName, fileSize, processName, string.Join(", ", _knownDrives));
+            }
+
+            // 4) Messaging / file-sharing apps: WhatsApp, Telegram, Slack, Teams, Discord, etc.
+            else if (IsFileTransferApp(processName)
+                     && (actionType is FileActionType.Create or FileActionType.Write)
+                     && fileSize > 0)
+            {
+                flag = "AppTransfer";
+                effectiveAction = FileActionType.Copy;
+                isTransfer = true;
+                direction = "Incoming"; // Usually receiving a file
+                _logger.LogWarning("APP FILE TRANSFER: {File} ({Size} bytes) via {App}",
+                    fileName, fileSize, processName);
             }
 
             var fileEvent = new FileEvent
@@ -377,7 +422,9 @@ public sealed class FileMonitorService : IDisposable
                 Timestamp = DateTime.UtcNow,
                 ProcessName = processName,
                 Flag = flag,
-                Source = source
+                Source = source,
+                IsTransfer = isTransfer,
+                Direction = direction
             };
 
             _onFileEvent(fileEvent);
@@ -515,6 +562,22 @@ public sealed class FileMonitorService : IDisposable
     /// Best-effort: get the foreground process name.
     /// This is a heuristic — FileSystemWatcher doesn't natively report which process caused the event.
     /// </summary>
+    /// <summary>
+    /// Returns true if the given process name is a known file-sharing / messaging app.
+    /// </summary>
+    private static bool IsFileTransferApp(string processName)
+    {
+        var apps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "whatsapp", "telegram", "slack", "teams", "discord",
+            "skype", "zoom", "signal", "element", "thunderbird",
+            "outlook", "filezilla", "winscp", "putty", "7zfm",
+            "winrar", "torrent", "qbittorrent", "utorrent", "bittorrent",
+            "sharex", "dropbox", "onedrive", "googledrivesync",
+        };
+        return apps.Contains(processName);
+    }
+
     private static string GetLikelyProcess()
     {
         try

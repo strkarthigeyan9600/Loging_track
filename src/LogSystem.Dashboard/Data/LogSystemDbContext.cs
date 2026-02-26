@@ -45,6 +45,12 @@ public class FileEventEntity
     [FirestoreProperty("flag")]
     public string Flag { get; set; } = "Normal";
 
+    [FirestoreProperty("isTransfer")]
+    public bool IsTransfer { get; set; } = false;
+
+    [FirestoreProperty("direction")]
+    public string Direction { get; set; } = "Unknown";
+
     /// <summary>
     /// Where the file event originated: USB | NetworkShare | CloudSync | UserFolder | Local
     /// </summary>

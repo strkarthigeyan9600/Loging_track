@@ -221,7 +221,7 @@
     <!-- Tab Navigation -->
     <div class="tabs">
         <button class="tab active" data-tab="alerts" onclick="switchTab('alerts')">Alerts</button>
-        <button class="tab" data-tab="transfers" onclick="switchTab('transfers')">⚠ Transfers</button>
+        <button class="tab" data-tab="transfers" onclick="switchTab('transfers')">🔄 All Transfers</button>
         <button class="tab" data-tab="files" onclick="switchTab('files')">File Events</button>
         <button class="tab" data-tab="network" onclick="switchTab('network')">Network</button>
         <button class="tab" data-tab="apps" onclick="switchTab('apps')">App Usage</button>
@@ -230,9 +230,16 @@
 
     <!-- Toolbar -->
     <div class="toolbar">
-        <select id="deviceFilter" onchange="refreshAll()">
-            <option value="">All Devices</option>
-        </select>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="deviceFilter" onchange="refreshAll()">
+                <option value="">All Devices</option>
+            </select>
+            <select id="directionFilter" onchange="loadTransfers()" title="Filter transfers by direction">
+                <option value="">All Directions</option>
+                <option value="Incoming">⬇️ Incoming</option>
+                <option value="Outgoing">⬆️ Outgoing</option>
+            </select>
+        </div>
         <select id="timeRange" onchange="refreshAll()">
             <option value="1">Last 1 hour</option>
             <option value="6">Last 6 hours</option>
@@ -272,6 +279,7 @@
                         <th>File Name</th>
                         <th>Full Path</th>
                         <th>Action</th>
+                        <th>Direction</th>
                         <th>Size</th>
                         <th>Process</th>
                         <th>Source</th>
@@ -413,10 +421,28 @@
         return `<span class="badge ${cls}">${sev}</span>`;
     }
 
+    function directionBadge(direction) {
+        if (!direction || direction === 'Unknown') return '<span class="badge" style="background:rgba(149,165,166,0.15);color:#95a5a6">&mdash; Unknown</span>';
+        if (direction === 'Incoming') return '<span class="badge" style="background:rgba(46,204,113,0.2);color:#2ecc71">&darr; Incoming</span>';
+        if (direction === 'Outgoing') return '<span class="badge" style="background:rgba(231,76,60,0.2);color:#e74c3c">&uarr; Outgoing</span>';
+        if (direction === 'DeleteExternal') return '<span class="badge" style="background:rgba(155,89,182,0.2);color:#9b59b6">&times; Deleted</span>';
+        return `<span class="badge" style="background:rgba(149,165,166,0.15);color:#95a5a6">${direction}</span>`;
+    }
+
     function flagBadge(flag) {
         if (!flag || flag === 'Normal') return '<span class="badge normal">Normal</span>';
-        const cls = flag.includes('Upload') ? 'critical' : 'danger';
-        return `<span class="badge ${cls}">${flag}</span>`;
+        const flagStyles = {
+            'UsbTransfer':        { bg: 'rgba(231,76,60,0.3)',  color: '#ff4444', icon: '🔌', label: 'USB Transfer' },
+            'ProbableUsbTransfer':{ bg: 'rgba(231,76,60,0.2)',  color: '#e74c3c', icon: '🔌', label: 'USB Transfer' },
+            'NetworkTransfer':    { bg: 'rgba(243,156,18,0.25)',color: '#f39c12', icon: '🌐', label: 'Network Transfer' },
+            'CloudSyncTransfer':  { bg: 'rgba(52,152,219,0.25)',color: '#3498db', icon: '☁️', label: 'Cloud Sync' },
+            'InternetDownload':   { bg: 'rgba(46,204,113,0.25)',color: '#27ae60', icon: '⬇️', label: 'Internet Download' },
+            'AppTransfer':        { bg: 'rgba(155,89,182,0.25)',color: '#9b59b6', icon: '💬', label: 'App Transfer' },
+            'ProbableUpload':     { bg: 'rgba(231,76,60,0.35)', color: '#ff0000', icon: '⬆️', label: 'Upload Detected' },
+        };
+        const s = flagStyles[flag];
+        if (s) return `<span class="badge" style="background:${s.bg};color:${s.color}">${s.icon} ${s.label}</span>`;
+        return `<span class="badge danger">${flag}</span>`;
     }
 
     function actionBadge(action) {
@@ -434,8 +460,14 @@
     }
 
     function sourceBadge(source) {
-        if (!source || source === 'Local' || source === 'UserFolder' || source === 'ConfiguredPath') {
-            return `<span class="badge normal">${source || 'Local'}</span>`;
+        if (!source || source === 'Local') {
+            return `<span class="badge normal">💻 Local</span>`;
+        }
+        if (source === 'UserFolder') {
+            return `<span class="badge normal">📁 User Folder</span>`;
+        }
+        if (source === 'ConfiguredPath') {
+            return `<span class="badge normal">📂 Configured</span>`;
         }
         const styles = {
             'USB': 'background:rgba(231,76,60,0.25);color:#ff6b6b',
@@ -443,8 +475,9 @@
             'CloudSync': 'background:rgba(52,152,219,0.25);color:#3498db',
             'SensitiveDir': 'background:rgba(155,89,182,0.25);color:#9b59b6'
         };
+        const icons = { 'USB': '🔌 ', 'NetworkShare': '🌐 ', 'CloudSync': '☁️ ', 'SensitiveDir': '🔒 ' };
         const style = styles[source] || 'background:rgba(149,165,166,0.15);color:#95a5a6';
-        const icon = source === 'USB' ? '🔌 ' : source === 'NetworkShare' ? '🌐 ' : source === 'CloudSync' ? '☁️ ' : '';
+        const icon = icons[source] || '';
         return `<span class="badge" style="${style}">${icon}${source}</span>`;
     }
 
@@ -539,24 +572,8 @@
             `).join('') || '<tr><td colspan="10" class="empty-state">No file events</td></tr>';
         }
 
-        // Transfers (USB / Network / Cloud)
-        const transfers = await fetchJSON(`${API}/api/dashboard/transfers?${params}&limit=200`);
-        if (transfers) {
-            document.getElementById('transfersTable').innerHTML = transfers.map(f => `
-                <tr style="${f.source === 'USB' ? 'background:rgba(231,76,60,0.05)' : f.source === 'NetworkShare' ? 'background:rgba(243,156,18,0.05)' : ''}">
-                    <td class="mono">${formatTime(f.timestamp)}</td>
-                    <td class="mono">${escapeHtml(f.deviceId)}</td>
-                    <td>${escapeHtml(f.user)}</td>
-                    <td><strong>${escapeHtml(f.fileName)}</strong></td>
-                    <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(f.fullPath)}">${escapeHtml(f.fullPath)}</td>
-                    <td>${actionBadge(f.actionType)}</td>
-                    <td>${formatBytes(f.fileSize)}</td>
-                    <td>${escapeHtml(f.processName)}</td>
-                    <td>${sourceBadge(f.source)}</td>
-                    <td>${flagBadge(f.flag)}</td>
-                </tr>
-            `).join('') || '<tr><td colspan="10" class="empty-state">No file transfers detected (USB, Network, Cloud)</td></tr>';
-        }
+        // Transfers — only REAL transfers (USB, Type-C, MTP, Internet, Cloud, App, Network)
+        await loadTransfers(params);
 
         // Network Events
         const net = await fetchJSON(`${API}/api/dashboard/network-events?${params}&limit=200`);
@@ -591,6 +608,46 @@
         }
 
         document.getElementById('lastRefresh').textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function loadTransfers(params) {
+        const p = params || getParams();
+        const direction = document.getElementById('directionFilter').value;
+        let url = `${API}/api/dashboard/transfers?${p}&limit=500`;
+        if (direction) url += `&direction=${encodeURIComponent(direction)}`;
+
+        const transfers = await fetchJSON(url);
+        if (transfers !== null) {
+            document.getElementById('transfersTable').innerHTML = transfers.map(f => {
+                let rowBg = '';
+                if (f.source === 'USB' || f.flag === 'UsbTransfer' || f.flag === 'ProbableUsbTransfer')
+                    rowBg = 'background:rgba(231,76,60,0.08)';
+                else if (f.source === 'NetworkShare' || f.flag === 'NetworkTransfer')
+                    rowBg = 'background:rgba(243,156,18,0.08)';
+                else if (f.source === 'CloudSync' || f.flag === 'CloudSyncTransfer')
+                    rowBg = 'background:rgba(52,152,219,0.08)';
+                else if (f.flag === 'InternetDownload')
+                    rowBg = 'background:rgba(46,204,113,0.08)';
+                else if (f.flag === 'AppTransfer')
+                    rowBg = 'background:rgba(155,89,182,0.08)';
+                else if (f.source === 'MTP/Device')
+                    rowBg = 'background:rgba(231,76,60,0.12)';
+                return `
+                <tr style="${rowBg}">
+                    <td class="mono">${formatTime(f.timestamp)}</td>
+                    <td class="mono">${escapeHtml(f.deviceId)}</td>
+                    <td>${escapeHtml(f.user)}</td>
+                    <td><strong>${escapeHtml(f.fileName)}</strong></td>
+                    <td class="mono" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(f.fullPath)}">${escapeHtml(f.fullPath)}</td>
+                    <td>${actionBadge(f.actionType)}</td>
+                    <td>${directionBadge(f.direction)}</td>
+                    <td>${formatBytes(f.fileSize)}</td>
+                    <td>${escapeHtml(f.processName)}</td>
+                    <td>${sourceBadge(f.source)}</td>
+                    <td>${flagBadge(f.flag)}</td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="11" class="empty-state">No file transfers detected</td></tr>';
+        }
     }
 
     // Initial load

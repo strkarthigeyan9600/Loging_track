@@ -19,6 +19,7 @@ public class Worker : BackgroundService
 
     private FileMonitorService? _fileMonitor;
     private AppMonitorService? _appMonitor;
+    private ShellCopyMonitor? _shellCopyMonitor;
     private NetworkMonitorService? _networkMonitor;
     private CorrelationEngine? _correlationEngine;
 
@@ -107,6 +108,14 @@ public class Worker : BackgroundService
                 _correlationEngine.RegisterFileRead(evt);
             });
 
+        // Initialize Shell Copy Monitor (ETW)
+        _shellCopyMonitor = new ShellCopyMonitor(
+            _logger as ILogger<ShellCopyMonitor>
+                ?? Microsoft.Extensions.Logging.LoggerFactoryExtensions.CreateLogger<ShellCopyMonitor>(
+                    new LoggerFactory()),
+             _config,
+            onFileEvent: evt => _queue.EnqueueFileEvent(evt));
+
         // Initialize App Monitor
         _appMonitor = new AppMonitorService(
             _logger as ILogger<AppMonitorService>
@@ -131,11 +140,12 @@ public class Worker : BackgroundService
     private void StartAllModules()
     {
         _fileMonitor?.Start();
+        _shellCopyMonitor?.Start();
         _appMonitor?.Start();
         _networkMonitor?.Start();
         _uploader.Start();
 
-        _logger.LogInformation("Modules started: File={File}, App={App}, Network={Net}, Correlation={Corr}",
+        _logger.LogInformation("Modules started: File={File}, ShellMon=True, App={App}, Network={Net}, Correlation={Corr}",
             _config.Value.FileMonitor.Enabled,
             _config.Value.AppMonitor.Enabled,
             _config.Value.NetworkMonitor.Enabled,
@@ -146,6 +156,7 @@ public class Worker : BackgroundService
     {
         _logger.LogInformation("Shutting down modules...");
         _fileMonitor?.Dispose();
+        _shellCopyMonitor?.Dispose();
         _appMonitor?.Dispose();
         _networkMonitor?.Dispose();
         _correlationEngine?.Dispose();
