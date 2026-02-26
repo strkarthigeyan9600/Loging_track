@@ -56,5 +56,6 @@ appsettings.Local.json
 
 ## Firebase service account key — NEVER commit this
 **/firebase-service-account.json
+**/firebase-service-accoun.json
 **/serviceAccountKey.json
 **/*-firebase-adminsdk-*.json
