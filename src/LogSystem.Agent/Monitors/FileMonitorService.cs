@@ -20,8 +20,13 @@ public sealed class FileMonitorService : IDisposable
     private readonly string _currentUser;
     private readonly string _machineId;
     private Timer? _usbPollTimer;
-    private readonly HashSet<string> _knownDrives = [];
+    private readonly HashSet<string> _knownDrives = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _watchedPaths = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Drives already present when the agent started — assumed to be internal/system drives.
+    /// Any drive letter that appears AFTER startup is treated as an external device (USB/Type-C/etc.).
+    /// </summary>
+    private readonly HashSet<string> _baselineDrives = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Built-in noisy path fragments that are ALWAYS excluded regardless of config.
@@ -141,12 +146,23 @@ public sealed class FileMonitorService : IDisposable
                 AddWatcher(path, "CloudSync");
         }
 
-        // Monitor USB drives
+        // ── Baseline all currently-present drive letters ──
+        // Type-C drives, external SSDs, phone storage etc. often appear as DriveType.Fixed.
+        // By recording the drives that exist at startup, we can detect ANY new drive as external.
+        foreach (var d in DriveInfo.GetDrives().Where(d => d.IsReady))
+            _baselineDrives.Add(d.RootDirectory.FullName);
+
+        _logger.LogInformation("Baseline drives: {Drives}", string.Join(", ", _baselineDrives));
+
+        // Monitor USB / Type-C / external drives
         if (_config.FileMonitor.MonitorUsb)
         {
-            ScanForRemovableDrives();
-            _usbPollTimer = new Timer(_ => ScanForRemovableDrives(), null,
-                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            ScanForExternalDrives();
+            _usbPollTimer = new Timer(_ =>
+            {
+                ScanForExternalDrives();
+                if (_config.FileMonitor.MonitorNetworkShares) RescanNetworkDrives();
+            }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         }
 
         // Monitor network shares
@@ -268,22 +284,27 @@ public sealed class FileMonitorService : IDisposable
     {
         try
         {
-            // ── Noise filtering ──
+            // ── Noise filtering (skip for USB/Network — always report those) ──
+            bool isTransferSource = source is "USB" or "NetworkShare" or "CloudSync";
 
-            // Filter excluded paths (AppData, .git, node_modules, caches, etc.)
-            if (IsExcludedPath(fullPath))
-                return;
+            if (!isTransferSource)
+            {
+                // Filter excluded paths (AppData, .git, node_modules, caches, etc.)
+                if (IsExcludedPath(fullPath))
+                    return;
 
-            // Filter excluded extensions
-            var ext = Path.GetExtension(fullPath)?.ToLowerInvariant();
-            if (IsExcludedExtension(ext))
-                return;
+                // Filter excluded extensions
+                var ext = Path.GetExtension(fullPath)?.ToLowerInvariant();
+                if (IsExcludedExtension(ext))
+                    return;
 
-            // Skip files that start with ~ (temp/lock files from Office, etc.)
+                // Skip files that start with ~ (temp/lock files from Office, etc.)
+                var fileName2 = Path.GetFileName(fullPath);
+                if (fileName2.StartsWith('~') || fileName2.StartsWith('.'))
+                    return;
+            }
+
             var fileName = Path.GetFileName(fullPath);
-            if (fileName.StartsWith('~') || fileName.StartsWith('.'))
-                return;
-
             long fileSize = 0;
             string? sha256 = null;
 
@@ -294,10 +315,10 @@ public sealed class FileMonitorService : IDisposable
                     var fi = new FileInfo(fullPath);
                     fileSize = fi.Length;
 
-                    // Compute SHA256 for sensitive directories if configured
-                    if (_config.FileMonitor.ComputeSha256ForSensitive &&
-                        source == "SensitiveDir" &&
-                        fileSize < 100 * 1024 * 1024) // Skip files > 100MB
+                    // Compute SHA256 for sensitive directories or transfers
+                    if ((_config.FileMonitor.ComputeSha256ForSensitive &&
+                        (source == "SensitiveDir" || isTransferSource)) &&
+                        fileSize > 0 && fileSize < 100 * 1024 * 1024)
                     {
                         sha256 = ComputeSha256(fullPath);
                     }
@@ -311,6 +332,38 @@ public sealed class FileMonitorService : IDisposable
             // Determine the process that triggered this (best-effort)
             var processName = GetLikelyProcess();
 
+            // ── Transfer detection ──
+            // A Create / Write on a USB or network or cloud drive is a TRANSFER
+            var flag = "Normal";
+            var effectiveAction = actionType;
+
+            if (isTransferSource && (actionType == FileActionType.Create || actionType == FileActionType.Write))
+            {
+                // File appearing on USB/Network/Cloud = it's being transferred there
+                effectiveAction = FileActionType.Copy; // It's really a transfer (copy to destination)
+                flag = source switch
+                {
+                    "USB" => "UsbTransfer",
+                    "NetworkShare" => "NetworkTransfer",
+                    "CloudSync" => "CloudSyncTransfer",
+                    _ => "Normal"
+                };
+
+                _logger.LogWarning("TRANSFER DETECTED [{Source}]: {File} ({Size} bytes) by {Process}",
+                    source, fileName, fileSize, processName);
+            }
+            else if (isTransferSource && actionType == FileActionType.Delete)
+            {
+                // File deleted from USB/Network = someone removed it from the transfer medium
+                flag = source switch
+                {
+                    "USB" => "UsbTransfer",
+                    "NetworkShare" => "NetworkTransfer",
+                    "CloudSync" => "CloudSyncTransfer",
+                    _ => "Normal"
+                };
+            }
+
             var fileEvent = new FileEvent
             {
                 DeviceId = _machineId,
@@ -320,14 +373,16 @@ public sealed class FileMonitorService : IDisposable
                 FullPath = newPath ?? fullPath,
                 FileSize = fileSize,
                 Sha256 = sha256,
-                ActionType = actionType,
+                ActionType = effectiveAction,
                 Timestamp = DateTime.UtcNow,
-                ProcessName = processName
+                ProcessName = processName,
+                Flag = flag,
+                Source = source
             };
 
             _onFileEvent(fileEvent);
-            _logger.LogDebug("File event: {Action} {File} by {Process} ({Size} bytes)",
-                actionType, fileName, processName, fileSize);
+            _logger.LogDebug("File event: {Action} {File} by {Process} ({Size} bytes) [source={Source}, flag={Flag}]",
+                effectiveAction, fileName, processName, fileSize, source, flag);
         }
         catch (Exception ex)
         {
@@ -335,36 +390,67 @@ public sealed class FileMonitorService : IDisposable
         }
     }
 
-    private void ScanForRemovableDrives()
+    /// <summary>
+    /// Scans for ALL external drives — USB sticks (Removable), Type-C drives (often Fixed),
+    /// external SSDs (Fixed), phone storage (Removable or Fixed), SD cards, etc.
+    /// Any drive letter NOT in the startup baseline is treated as external.
+    /// </summary>
+    private void ScanForExternalDrives()
     {
         try
         {
-            var removable = DriveInfo.GetDrives()
-                .Where(d => d.DriveType == DriveType.Removable && d.IsReady)
-                .Select(d => d.RootDirectory.FullName)
-                .ToHashSet();
+            var currentDrives = DriveInfo.GetDrives()
+                .Where(d => d.IsReady)
+                .ToList();
 
-            // Detect newly inserted drives
-            foreach (var drive in removable)
+            var currentPaths = currentDrives
+                .Select(d => d.RootDirectory.FullName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // ── Detect newly connected external drives ──
+            foreach (var drive in currentDrives)
             {
-                if (_knownDrives.Add(drive))
+                var root = drive.RootDirectory.FullName;
+
+                // Skip drives that existed at startup (system/internal drives)
+                // Exception: always pick up DriveType.Removable even if it was present at startup
+                bool isNew = !_baselineDrives.Contains(root);
+                bool isRemovable = drive.DriveType == DriveType.Removable;
+
+                if ((isNew || isRemovable) && _knownDrives.Add(root))
                 {
-                    _logger.LogInformation("USB drive detected: {Drive}", drive);
-                    AddWatcher(drive, "USB");
+                    _logger.LogWarning(
+                        "EXTERNAL DRIVE CONNECTED: {Drive} (Type={DriveType}, Label={Label}, Size={Size} GB)",
+                        root, drive.DriveType, drive.VolumeLabel,
+                        drive.TotalSize / (1024.0 * 1024 * 1024));
+
+                    if (_watchedPaths.Add(root))
+                        AddWatcher(root, "USB");
                 }
             }
 
-            // Detect removed drives
-            var removed = _knownDrives.Except(removable).ToList();
+            // ── Detect removed drives ──
+            var removed = _knownDrives.Where(d => !currentPaths.Contains(d)).ToList();
             foreach (var drive in removed)
             {
                 _knownDrives.Remove(drive);
-                _logger.LogInformation("USB drive removed: {Drive}", drive);
+                _logger.LogWarning("EXTERNAL DRIVE REMOVED: {Drive}", drive);
+
+                // Remove the watcher for this drive
+                var deadWatcher = _watchers.FirstOrDefault(w =>
+                    w.Path.Equals(drive, StringComparison.OrdinalIgnoreCase));
+                if (deadWatcher != null)
+                {
+                    deadWatcher.EnableRaisingEvents = false;
+                    deadWatcher.Dispose();
+                    _watchers.Remove(deadWatcher);
+                    _watchedPaths.Remove(drive);
+                }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error scanning removable drives");
+            _logger.LogError(ex, "Error scanning external drives");
         }
     }
 
@@ -377,12 +463,44 @@ public sealed class FileMonitorService : IDisposable
 
             foreach (var drive in networkDrives)
             {
-                AddWatcher(drive.RootDirectory.FullName, "NetworkShare");
+                var root = drive.RootDirectory.FullName;
+                if (_watchedPaths.Add(root))
+                {
+                    _logger.LogWarning("NETWORK DRIVE DETECTED: {Drive}", root);
+                    AddWatcher(root, "NetworkShare");
+                }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error scanning network drives");
+        }
+    }
+
+    /// <summary>
+    /// Re-scan for network drives periodically (they can be mapped after startup).
+    /// Called from the same poll timer as external drives.
+    /// </summary>
+    private void RescanNetworkDrives()
+    {
+        try
+        {
+            var networkDrives = DriveInfo.GetDrives()
+                .Where(d => d.DriveType == DriveType.Network && d.IsReady);
+
+            foreach (var drive in networkDrives)
+            {
+                var root = drive.RootDirectory.FullName;
+                if (_watchedPaths.Add(root))
+                {
+                    _logger.LogWarning("NEW NETWORK DRIVE MAPPED: {Drive}", root);
+                    AddWatcher(root, "NetworkShare");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error re-scanning network drives");
         }
     }
 

@@ -44,6 +44,12 @@ public class FileEventEntity
 
     [FirestoreProperty("flag")]
     public string Flag { get; set; } = "Normal";
+
+    /// <summary>
+    /// Where the file event originated: USB | NetworkShare | CloudSync | UserFolder | Local
+    /// </summary>
+    [FirestoreProperty("source")]
+    public string Source { get; set; } = "Local";
 }
 
 [FirestoreData]

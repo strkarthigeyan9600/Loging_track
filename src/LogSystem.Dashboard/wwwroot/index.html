@@ -214,13 +214,14 @@
         <div class="card"><div class="label">Total Alerts (24h)</div><div class="value warning" id="totalAlerts">—</div></div>
         <div class="card"><div class="label">Critical Alerts</div><div class="value danger" id="criticalAlerts">—</div></div>
         <div class="card"><div class="label">File Events</div><div class="value" id="fileEventsCount">—</div></div>
-        <div class="card"><div class="label">Flagged Files</div><div class="value warning" id="flaggedFiles">—</div></div>
+        <div class="card"><div class="label">File Transfers</div><div class="value danger" id="transferEvents">—</div></div>
         <div class="card"><div class="label">Network Events</div><div class="value" id="networkEventsCount">—</div></div>
     </div>
 
     <!-- Tab Navigation -->
     <div class="tabs">
         <button class="tab active" data-tab="alerts" onclick="switchTab('alerts')">Alerts</button>
+        <button class="tab" data-tab="transfers" onclick="switchTab('transfers')">⚠ Transfers</button>
         <button class="tab" data-tab="files" onclick="switchTab('files')">File Events</button>
         <button class="tab" data-tab="network" onclick="switchTab('network')">Network</button>
         <button class="tab" data-tab="apps" onclick="switchTab('apps')">App Usage</button>
@@ -260,6 +261,28 @@
         </div>
     </div>
 
+    <div id="tab-transfers" class="tab-content hidden">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Device</th>
+                        <th>User</th>
+                        <th>File Name</th>
+                        <th>Full Path</th>
+                        <th>Action</th>
+                        <th>Size</th>
+                        <th>Process</th>
+                        <th>Source</th>
+                        <th>Flag</th>
+                    </tr>
+                </thead>
+                <tbody id="transfersTable"></tbody>
+            </table>
+        </div>
+    </div>
+
     <div id="tab-files" class="tab-content hidden">
         <div class="table-container">
             <table>
@@ -273,6 +296,7 @@
                         <th>Action</th>
                         <th>Size</th>
                         <th>Process</th>
+                        <th>Source</th>
                         <th>Flag</th>
                     </tr>
                 </thead>
@@ -409,6 +433,21 @@
         return `<span class="badge" style="${style}">${action || 'Unknown'}</span>`;
     }
 
+    function sourceBadge(source) {
+        if (!source || source === 'Local' || source === 'UserFolder' || source === 'ConfiguredPath') {
+            return `<span class="badge normal">${source || 'Local'}</span>`;
+        }
+        const styles = {
+            'USB': 'background:rgba(231,76,60,0.25);color:#ff6b6b',
+            'NetworkShare': 'background:rgba(243,156,18,0.25);color:#f39c12',
+            'CloudSync': 'background:rgba(52,152,219,0.25);color:#3498db',
+            'SensitiveDir': 'background:rgba(155,89,182,0.25);color:#9b59b6'
+        };
+        const style = styles[source] || 'background:rgba(149,165,166,0.15);color:#95a5a6';
+        const icon = source === 'USB' ? '🔌 ' : source === 'NetworkShare' ? '🌐 ' : source === 'CloudSync' ? '☁️ ' : '';
+        return `<span class="badge" style="${style}">${icon}${source}</span>`;
+    }
+
     async function fetchJSON(url) {
         try {
             const res = await fetch(url);
@@ -435,7 +474,7 @@
             document.getElementById('totalAlerts').textContent = summary.totalAlerts;
             document.getElementById('criticalAlerts').textContent = summary.criticalAlerts;
             document.getElementById('fileEventsCount').textContent = summary.fileEvents;
-            document.getElementById('flaggedFiles').textContent = summary.flaggedFiles;
+            document.getElementById('transferEvents').textContent = summary.transferEvents;
             document.getElementById('networkEventsCount').textContent = summary.networkEvents;
         }
 
@@ -494,9 +533,29 @@
                     <td>${actionBadge(f.actionType)}</td>
                     <td>${formatBytes(f.fileSize)}</td>
                     <td>${escapeHtml(f.processName)}</td>
+                    <td>${sourceBadge(f.source)}</td>
                     <td>${flagBadge(f.flag)}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="9" class="empty-state">No file events</td></tr>';
+            `).join('') || '<tr><td colspan="10" class="empty-state">No file events</td></tr>';
+        }
+
+        // Transfers (USB / Network / Cloud)
+        const transfers = await fetchJSON(`${API}/api/dashboard/transfers?${params}&limit=200`);
+        if (transfers) {
+            document.getElementById('transfersTable').innerHTML = transfers.map(f => `
+                <tr style="${f.source === 'USB' ? 'background:rgba(231,76,60,0.05)' : f.source === 'NetworkShare' ? 'background:rgba(243,156,18,0.05)' : ''}">
+                    <td class="mono">${formatTime(f.timestamp)}</td>
+                    <td class="mono">${escapeHtml(f.deviceId)}</td>
+                    <td>${escapeHtml(f.user)}</td>
+                    <td><strong>${escapeHtml(f.fileName)}</strong></td>
+                    <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(f.fullPath)}">${escapeHtml(f.fullPath)}</td>
+                    <td>${actionBadge(f.actionType)}</td>
+                    <td>${formatBytes(f.fileSize)}</td>
+                    <td>${escapeHtml(f.processName)}</td>
+                    <td>${sourceBadge(f.source)}</td>
+                    <td>${flagBadge(f.flag)}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="10" class="empty-state">No file transfers detected (USB, Network, Cloud)</td></tr>';
         }
 
         // Network Events

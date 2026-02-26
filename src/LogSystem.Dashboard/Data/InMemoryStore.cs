@@ -109,6 +109,31 @@ public sealed class InMemoryStore
         return results.OrderByDescending(e => e.Timestamp.ToDateTime()).Take(limit).ToList();
     }
 
+    /// <summary>
+    /// Get only transfer events (USB, Network, CloudSync).
+    /// </summary>
+    public List<FileEventEntity> GetTransferEvents(Timestamp cutoff, string? deviceId = null, string? source = null, int limit = 200)
+    {
+        var results = _fileEvents.Values
+            .Where(e => e.Timestamp >= cutoff)
+            .Where(e => e.Source is "USB" or "NetworkShare" or "CloudSync"
+                     || e.Flag is "UsbTransfer" or "NetworkTransfer" or "CloudSyncTransfer" or "ProbableUpload");
+
+        if (!string.IsNullOrEmpty(deviceId))
+            results = results.Where(e => e.DeviceId == deviceId);
+        if (!string.IsNullOrEmpty(source))
+            results = results.Where(e => e.Source == source);
+
+        return results.OrderByDescending(e => e.Timestamp.ToDateTime()).Take(limit).ToList();
+    }
+
+    public int CountTransferEvents(Timestamp cutoff)
+    {
+        return _fileEvents.Values.Count(e => e.Timestamp >= cutoff &&
+            (e.Source is "USB" or "NetworkShare" or "CloudSync"
+             || e.Flag is "UsbTransfer" or "NetworkTransfer" or "CloudSyncTransfer" or "ProbableUpload"));
+    }
+
     public int CountFileEvents(Timestamp cutoff, string? flagFilter = null)
     {
         var results = _fileEvents.Values

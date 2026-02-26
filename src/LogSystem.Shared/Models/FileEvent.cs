@@ -13,7 +13,15 @@ public class FileEvent
     public FileActionType ActionType { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
     public string ProcessName { get; set; } = string.Empty;
-    public string Flag { get; set; } = "Normal"; // Normal | ProbableUpload
+    /// <summary>
+    /// Normal | ProbableUpload | UsbTransfer | NetworkTransfer | CloudSyncTransfer
+    /// </summary>
+    public string Flag { get; set; } = "Normal";
+    /// <summary>
+    /// Where the watcher detected this event:
+    /// UserFolder | USB | NetworkShare | CloudSync | SensitiveDir | ConfiguredPath
+    /// </summary>
+    public string Source { get; set; } = "Local";
 }
 
 public enum FileActionType

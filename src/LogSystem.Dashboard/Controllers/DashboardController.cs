@@ -54,6 +54,19 @@ public class DashboardController : ControllerBase
         return Ok(_store.GetFileEvents(cutoff, deviceId, flag, limit));
     }
 
+    // ─── File Transfers (USB / Network / Cloud) ───
+
+    [HttpGet("transfers")]
+    public IActionResult GetTransfers(
+        [FromQuery] string? deviceId = null,
+        [FromQuery] string? source = null,
+        [FromQuery] int hours = 24,
+        [FromQuery] int limit = 200)
+    {
+        var cutoff = Timestamp.FromDateTime(DateTime.UtcNow.AddHours(-hours));
+        return Ok(_store.GetTransferEvents(cutoff, deviceId, source, limit));
+    }
+
     // ─── Network Events ───
 
     [HttpGet("network-events")]
@@ -93,6 +106,7 @@ public class DashboardController : ControllerBase
         var highAlerts = _store.CountAlerts(cutoff, "High");
         var fileEvents = _store.CountFileEvents(cutoff);
         var flaggedFiles = _store.CountFileEvents(cutoff, flagFilter: "ProbableUpload");
+        var transferEvents = _store.CountTransferEvents(cutoff);
         var networkEvents = _store.CountNetworkEvents(cutoff);
 
         var allNetEvents = _store.GetNetworkEventsForAggregation(cutoff);
@@ -134,6 +148,7 @@ public class DashboardController : ControllerBase
             highAlerts,
             fileEvents,
             flaggedFiles,
+            transferEvents,
             networkEvents,
             topProcesses,
             topApps

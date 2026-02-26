@@ -80,7 +80,8 @@ public class LogIngestionController : ControllerBase
                 ActionType = fe.ActionType.ToString(),
                 Timestamp = Timestamp.FromDateTime(fe.Timestamp.ToUniversalTime()),
                 ProcessName = fe.ProcessName,
-                Flag = fe.Flag
+                Flag = fe.Flag,
+                Source = fe.Source
             }).ToList();
         }
 
