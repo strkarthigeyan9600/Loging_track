@@ -110,19 +110,29 @@ public sealed class InMemoryStore
     }
 
     /// <summary>
-    /// Get only transfer events (USB, Network, CloudSync).
+    /// Get only REAL file transfer events — USB, Type-C, Network, Cloud, Internet Downloads, App transfers.
+    /// Filters strictly by IsTransfer=true or known transfer flags, so this is always distinct from plain file activity.
     /// </summary>
-    public List<FileEventEntity> GetTransferEvents(Timestamp cutoff, string? deviceId = null, string? source = null, int limit = 200)
+    private static readonly HashSet<string> _transferFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "UsbTransfer", "ProbableUsbTransfer", "NetworkTransfer",
+        "CloudSyncTransfer", "InternetDownload", "AppTransfer", "ProbableUpload",
+        "MTP/DeviceTransfer"
+    };
+
+    public List<FileEventEntity> GetTransferEvents(Timestamp cutoff, string? deviceId = null, string? source = null, string? direction = null, int limit = 500)
     {
         var results = _fileEvents.Values
             .Where(e => e.Timestamp >= cutoff)
-            .Where(e => e.Source is "USB" or "NetworkShare" or "CloudSync"
-                     || e.Flag is "UsbTransfer" or "NetworkTransfer" or "CloudSyncTransfer" or "ProbableUpload");
+            .Where(e => e.IsTransfer || _transferFlags.Contains(e.Flag ?? string.Empty)
+                        || e.Source is "USB" or "NetworkShare" or "CloudSync" or "MTP/Device");
 
         if (!string.IsNullOrEmpty(deviceId))
             results = results.Where(e => e.DeviceId == deviceId);
         if (!string.IsNullOrEmpty(source))
             results = results.Where(e => e.Source == source);
+        if (!string.IsNullOrEmpty(direction))
+            results = results.Where(e => e.Direction.Equals(direction, StringComparison.OrdinalIgnoreCase));
 
         return results.OrderByDescending(e => e.Timestamp.ToDateTime()).Take(limit).ToList();
     }
@@ -130,8 +140,8 @@ public sealed class InMemoryStore
     public int CountTransferEvents(Timestamp cutoff)
     {
         return _fileEvents.Values.Count(e => e.Timestamp >= cutoff &&
-            (e.Source is "USB" or "NetworkShare" or "CloudSync"
-             || e.Flag is "UsbTransfer" or "NetworkTransfer" or "CloudSyncTransfer" or "ProbableUpload"));
+            (e.IsTransfer || _transferFlags.Contains(e.Flag ?? string.Empty)
+             || e.Source is "USB" or "NetworkShare" or "CloudSync" or "MTP/Device"));
     }
 
     public int CountFileEvents(Timestamp cutoff, string? flagFilter = null)

@@ -17,6 +17,17 @@ public class FileEvent
     /// Normal | ProbableUpload | UsbTransfer | NetworkTransfer | CloudSyncTransfer
     /// </summary>
     public string Flag { get; set; } = "Normal";
+
+    /// <summary>
+    /// True if this event represents a file transfer (copy/move) between locations, rather than simple activity.
+    /// </summary>
+    public bool IsTransfer { get; set; } = false;
+
+    /// <summary>
+    /// Incoming (Download) or Outgoing (Upload)
+    /// </summary>
+    public string Direction { get; set; } = "Unknown";
+
     /// <summary>
     /// Where the watcher detected this event:
     /// UserFolder | USB | NetworkShare | CloudSync | SensitiveDir | ConfiguredPath

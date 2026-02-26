@@ -81,7 +81,9 @@ public class LogIngestionController : ControllerBase
                 Timestamp = Timestamp.FromDateTime(fe.Timestamp.ToUniversalTime()),
                 ProcessName = fe.ProcessName,
                 Flag = fe.Flag,
-                Source = fe.Source
+                Source = fe.Source,
+                IsTransfer = fe.IsTransfer,
+                Direction = fe.Direction
             }).ToList();
         }
 
