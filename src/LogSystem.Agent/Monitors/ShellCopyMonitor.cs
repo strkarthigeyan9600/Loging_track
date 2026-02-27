@@ -126,7 +126,7 @@ public class ShellCopyMonitor : IDisposable
             ActionType = FileActionType.Copy,
             Timestamp = DateTime.UtcNow,
             ProcessName = "explorer", // Shell operations usually via Explorer
-            Flag = destinationType + "Transfer",
+            Flag = destinationType + "Outgoing", // e.g. "USBOutgoing", "NetworkShareOutgoing"
             Source = destinationType,
             IsTransfer = true,
             Direction = "Outgoing" // Shell copy TO somewhere

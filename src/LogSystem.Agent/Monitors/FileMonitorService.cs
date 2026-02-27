@@ -146,13 +146,23 @@ public sealed class FileMonitorService : IDisposable
                 AddWatcher(path, "CloudSync");
         }
 
-        // ── Baseline all currently-present drive letters ──
-        // Type-C drives, external SSDs, phone storage etc. often appear as DriveType.Fixed.
-        // By recording the drives that exist at startup, we can detect ANY new drive as external.
-        foreach (var d in DriveInfo.GetDrives().Where(d => d.IsReady))
-            _baselineDrives.Add(d.RootDirectory.FullName);
+        // ── Baseline only the System Drive ──
+        // Instead of baselining ALL drives at startup, only exclude C:\ (System).
+        // This ensures external SSDs/HDDs connected BEFORE launch are still monitored.
+        var systemDrive = Path.GetPathRoot(Environment.SystemDirectory);
+        if (!string.IsNullOrEmpty(systemDrive))
+        {
+            _baselineDrives.Add(systemDrive);
+        }
+        
+        // Also add the drive where the executable is running if different
+        var appDrive = Path.GetPathRoot(AppContext.BaseDirectory);
+        if (!string.IsNullOrEmpty(appDrive) && !_baselineDrives.Contains(appDrive))
+        {
+             _baselineDrives.Add(appDrive);
+        }
 
-        _logger.LogInformation("Baseline drives: {Drives}", string.Join(", ", _baselineDrives));
+        _logger.LogInformation("Baseline (System/App) drives: {Drives}", string.Join(", ", _baselineDrives));
 
         // Monitor USB / Type-C / external drives
         if (_config.FileMonitor.MonitorUsb)
@@ -284,8 +294,8 @@ public sealed class FileMonitorService : IDisposable
     {
         try
         {
-            // ── Noise filtering (skip for USB/Network — always report those) ──
-            bool isTransferSource = source is "USB" or "NetworkShare" or "CloudSync";
+            // ── Noise filtering (skip for External/Network — always report those) ──
+            bool isTransferSource = source is "ExternalDrive" or "USB" or "NetworkShare" or "CloudSync";
 
             if (!isTransferSource)
             {
@@ -340,32 +350,36 @@ public sealed class FileMonitorService : IDisposable
             var flag = "Normal";
             var effectiveAction = actionType;
             bool isTransfer = false;
-            string direction = "Unknown";
+            string direction = "Local";
 
-            // 1) Activity on USB / Network / Cloud folders (The watcher is ON the external device)
+            // 1) Activity on External / Network / Cloud folders (The watcher is ON the external device)
             if (isTransferSource)
             {
-                flag = source switch
+                if (source == "ExternalDrive" || source == "USB")
                 {
-                    "USB" => "UsbTransfer",
-                    "NetworkShare" => "NetworkTransfer",
-                    "CloudSync" => "CloudSyncTransfer",
-                    _ => "Normal"
-                };
+                    flag = actionType is FileActionType.Create or FileActionType.Write ? "UsbOutgoing" : "UsbIncoming"; // Create on External = Outgoing to External
+                    if (actionType == FileActionType.Delete) 
+                    {
+                         flag = "UsbDelete";
+                         direction = "ExternalManipulation";
+                    }
+                }
+                else if (source == "NetworkShare")
+                {
+                    flag = actionType is FileActionType.Create or FileActionType.Write ? "NetworkOutgoing" : "NetworkIncoming";
+                }
+                else if (source == "CloudSync")
+                {
+                    flag = actionType is FileActionType.Create or FileActionType.Write ? "CloudUpload" : "CloudDownload"; // Create in Cloud folder = Upload
+                }
 
                 if (actionType is FileActionType.Create or FileActionType.Write)
                 {
-                    // Created on USB = Copied TO USB (Outgoing)
                     effectiveAction = FileActionType.Copy;
                     isTransfer = true;
                     direction = "Outgoing";
-                    _logger.LogWarning("TRANSFER DETECTED (Outgoing): {File} ({Size} bytes) TO {Source} by {Process}",
-                        fileName, fileSize, source, processName);
-                }
-                else if (actionType is FileActionType.Delete)
-                {
-                    // Deleted from USB
-                    direction = "DeleteExternal";
+                    _logger.LogWarning("TRANSFER DETECTED ({Direction}): {File} ({Size} bytes) TO {Source} by {Process}",
+                        direction, fileName, fileSize, source, processName);
                 }
             }
 
@@ -382,21 +396,22 @@ public sealed class FileMonitorService : IDisposable
                     fileName, fileSize, processName);
             }
 
-            // 3) Cross-correlation: file appeared locally while external drive connected
+            // 3) Probable Incoming USB Transfer: File created on Local Drive while USB is connected
             else if (_knownDrives.Count > 0
                      && actionType == FileActionType.Create
                      && fileSize > 0)
             {
-                flag = "ProbableUsbTransfer";
+                // Heuristic: If a file is created on C: quickly after USB insertion, or while USB is present
+                flag = "UsbIncoming";
                 effectiveAction = FileActionType.Copy;
                 isTransfer = true;
-                direction = "Incoming"; // USB connected, file created on C: -> Assume copied FROM USB
+                direction = "Incoming"; 
                 _logger.LogWarning(
-                    "PROBABLE USB TRANSFER (Incoming): {File} ({Size} bytes) by {Process} — drives: {Drives}",
+                    "PROBABLE USB INCOMING: {File} ({Size} bytes) by {Process} — USB drives present: {Drives}",
                     fileName, fileSize, processName, string.Join(", ", _knownDrives));
             }
 
-            // 4) Messaging / file-sharing apps: WhatsApp, Telegram, Slack, Teams, Discord, etc.
+            // 4) Messaging / file-sharing apps
             else if (IsFileTransferApp(processName)
                      && (actionType is FileActionType.Create or FileActionType.Write)
                      && fileSize > 0)
@@ -407,6 +422,13 @@ public sealed class FileMonitorService : IDisposable
                 direction = "Incoming"; // Usually receiving a file
                 _logger.LogWarning("APP FILE TRANSFER: {File} ({Size} bytes) via {App}",
                     fileName, fileSize, processName);
+            }
+            
+            // 5) Default fallback for large files (potential unknown transfer)
+            else if (fileSize > 50 * 1024 * 1024 && actionType == FileActionType.Create)
+            {
+                 flag = "LargeFileCreate";
+                 // Not necessarily a transfer, but worth flagging distinct from generic "Normal"
             }
 
             var fileEvent = new FileEvent
@@ -472,7 +494,7 @@ public sealed class FileMonitorService : IDisposable
                         drive.TotalSize / (1024.0 * 1024 * 1024));
 
                     if (_watchedPaths.Add(root))
-                        AddWatcher(root, "USB");
+                        AddWatcher(root, "ExternalDrive"); // Was "USB", but covers fixed external SSDs too
                 }
             }
 
