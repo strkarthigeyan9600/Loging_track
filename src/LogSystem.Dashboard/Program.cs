@@ -7,7 +7,7 @@ using LogSystem.Dashboard.Filters;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ─── Firebase / Firestore ───
+// ─── Firebase / Firestore (Optional for local-only mode) ───
 var firebaseCredPath = builder.Configuration["Firebase:CredentialPath"]
     ?? "firebase-service-account.json";
 
@@ -15,34 +15,43 @@ var firebaseCredPath = builder.Configuration["Firebase:CredentialPath"]
 if (!Path.IsPathRooted(firebaseCredPath))
     firebaseCredPath = Path.Combine(builder.Environment.ContentRootPath, firebaseCredPath);
 
-if (!File.Exists(firebaseCredPath))
-    throw new FileNotFoundException($"Firebase credential file not found: {firebaseCredPath}");
+bool useFirestore = File.Exists(firebaseCredPath);
 
-var firebaseProjectId = builder.Configuration["Firebase:ProjectId"]
-    ?? throw new InvalidOperationException("Firebase:ProjectId is required in configuration.");
-
-// Set GOOGLE_APPLICATION_CREDENTIALS so all Google SDKs pick it up
-Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", firebaseCredPath);
-
-// Initialize Firebase Admin SDK (used for auth / optional features)
-if (FirebaseApp.DefaultInstance == null)
+if (useFirestore)
 {
-    FirebaseApp.Create(new AppOptions
+    var firebaseProjectId = builder.Configuration["Firebase:ProjectId"]
+        ?? throw new InvalidOperationException("Firebase:ProjectId is required in configuration.");
+
+    // Set GOOGLE_APPLICATION_CREDENTIALS so all Google SDKs pick it up
+    Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", firebaseCredPath);
+
+    // Initialize Firebase Admin SDK (used for auth / optional features)
+    if (FirebaseApp.DefaultInstance == null)
     {
-        Credential = GoogleCredential.FromFile(firebaseCredPath),
-        ProjectId = firebaseProjectId
-    });
+        FirebaseApp.Create(new AppOptions
+        {
+            Credential = GoogleCredential.FromFile(firebaseCredPath),
+            ProjectId = firebaseProjectId
+        });
+    }
+
+    // Initialize Firestore client
+    var firestoreDb = new FirestoreDbBuilder
+    {
+        ProjectId = firebaseProjectId,
+        CredentialsPath = firebaseCredPath
+    }.Build();
+
+    builder.Services.AddSingleton(firestoreDb);
+    builder.Services.AddSingleton<FirestoreService>();
+    Console.WriteLine($"✓ Firestore enabled - Project: {firebaseProjectId}");
+}
+else
+{
+    Console.WriteLine("⚠️  Running in LOCAL-ONLY mode (no Firestore persistence)");
+    Console.WriteLine($"   Place 'firebase-service-account.json' in {builder.Environment.ContentRootPath} to enable Firestore");
 }
 
-// Initialize Firestore client
-var firestoreDb = new FirestoreDbBuilder
-{
-    ProjectId = firebaseProjectId,
-    CredentialsPath = firebaseCredPath
-}.Build();
-
-builder.Services.AddSingleton(firestoreDb);
-builder.Services.AddSingleton<FirestoreService>();
 builder.Services.AddSingleton<InMemoryStore>();
 builder.Services.AddMemoryCache();
 
@@ -77,16 +86,19 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 // Verify Firestore connection on startup (non-fatal — quota/transient errors shouldn't block startup)
-try
+if (useFirestore)
 {
-    var fs = app.Services.GetRequiredService<FirestoreDb>();
-    var collections = await fs.ListRootCollectionsAsync().ToListAsync();
-    app.Logger.LogInformation("Connected to Firestore project: {ProjectId} ({Count} collections)", 
-        fs.ProjectId, collections.Count);
-}
-catch (Exception ex)
-{
-    app.Logger.LogWarning(ex, "Firestore connectivity check failed (may be quota/transient). Dashboard will start anyway.");
+    try
+    {
+        var fs = app.Services.GetRequiredService<FirestoreDb>();
+        var collections = await fs.ListRootCollectionsAsync().ToListAsync();
+        app.Logger.LogInformation("Connected to Firestore project: {ProjectId} ({Count} collections)", 
+            fs.ProjectId, collections.Count);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Firestore connectivity check failed (may be quota/transient). Dashboard will start anyway.");
+    }
 }
 
 // Middleware pipeline

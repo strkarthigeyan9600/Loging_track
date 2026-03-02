@@ -47,6 +47,84 @@
             font-size: 13px;
         }
 
+        /* Notification Popup */
+        .notification-popup {
+            position: fixed;
+            top: 80px;
+            right: 24px;
+            background: var(--surface);
+            border: 2px solid var(--danger);
+            border-radius: 8px;
+            padding: 16px 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+            max-width: 400px;
+        }
+
+        .notification-popup .notification-title {
+            color: var(--danger);
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .notification-popup .notification-body {
+            color: var(--text);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .notification-popup .notification-close {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: none;
+            border: none;
+            color: var(--text-dim);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 4px 8px;
+        }
+
+        .notification-popup .notification-close:hover {
+            color: var(--text);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+
+        /* Device table row states */
+        tr.device-disconnected {
+            background: rgba(231, 76, 60, 0.15) !important;
+        }
+
+        tr.device-disconnected td {
+            color: var(--danger) !important;
+        }
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -372,6 +450,9 @@
 
 <script>
     const API = '';  // Same origin
+    
+    // Track previous device states for disconnect detection
+    let previousDevices = new Map();
 
     function switchTab(name) {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -396,6 +477,58 @@
         }
         const d = new Date(ts);
         return isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+    }
+
+    function showDisconnectNotification(deviceId, hostname, user) {
+        // Remove any existing notification
+        const existing = document.querySelector('.notification-popup');
+        if (existing) {
+            existing.remove();
+        }
+
+        // Create notification
+        const notification = document.createElement('div');
+        notification.className = 'notification-popup';
+        notification.innerHTML = `
+            <button class="notification-close" onclick="this.parentElement.remove()">×</button>
+            <div class="notification-title">
+                ⚠️ Device Disconnected
+            </div>
+            <div class="notification-body">
+                <strong>${escapeHtml(hostname)}</strong><br>
+                User: ${escapeHtml(user)}<br>
+                Device ID: <span style="font-family:monospace;font-size:11px">${escapeHtml(deviceId)}</span>
+            </div>
+        `;
+        document.body.appendChild(notification);
+
+        // Auto-dismiss after 10 seconds
+        setTimeout(() => {
+            if (notification.parentElement) {
+                notification.style.animation = 'slideOut 0.3s ease-out';
+                setTimeout(() => notification.remove(), 300);
+            }
+        }, 10000);
+    }
+
+    function isDeviceDisconnected(lastSeenTimestamp) {
+        if (!lastSeenTimestamp) return true;
+        
+        // Handle different timestamp formats
+        let lastSeenDate;
+        if (typeof lastSeenTimestamp === 'string') {
+            // ISO string format from API
+            lastSeenDate = new Date(lastSeenTimestamp);
+        } else if (lastSeenTimestamp.seconds !== undefined) {
+            // Firestore {seconds, nanos} format
+            lastSeenDate = new Date(lastSeenTimestamp.seconds * 1000 + (lastSeenTimestamp.nanos || 0) / 1000000);
+        } else {
+            lastSeenDate = new Date(lastSeenTimestamp);
+        }
+        
+        const now = new Date();
+        const diffMinutes = (now - lastSeenDate) / 1000 / 60;
+        return diffMinutes > 2; // Consider disconnected if not seen in last 2 minutes
     }
 
     function escapeHtml(str) {
@@ -514,28 +647,52 @@
         // Devices dropdown
         const devices = await fetchJSON(`${API}/api/dashboard/devices`);
         if (devices) {
+            // Detect disconnections
+            const currentDevices = new Map();
+            devices.forEach(d => {
+                currentDevices.set(d.deviceId, d);
+                
+                // Check if device was previously connected but now disconnected
+                const previousDevice = previousDevices.get(d.deviceId);
+                if (previousDevice) {
+                    const wasConnected = !isDeviceDisconnected(previousDevice.lastSeen);
+                    const isNowDisconnected = isDeviceDisconnected(d.lastSeen);
+                    
+                    if (wasConnected && isNowDisconnected) {
+                        showDisconnectNotification(d.deviceId, d.hostname, d.user);
+                    }
+                }
+            });
+            previousDevices = currentDevices;
+
             const sel = document.getElementById('deviceFilter');
             const current = sel.value;
             sel.innerHTML = '<option value="">All Devices</option>';
             devices.forEach(d => {
                 const opt = document.createElement('option');
                 opt.value = d.deviceId;
-                opt.textContent = `${d.hostname} (${d.user})`;
+                const status = isDeviceDisconnected(d.lastSeen) ? '🔴' : '🟢';
+                opt.textContent = `${status} ${d.hostname} (${d.user})`;
                 sel.appendChild(opt);
             });
             sel.value = current;
 
-            // Devices tab
-            document.getElementById('devicesTable').innerHTML = devices.map(d => `
-                <tr>
-                    <td class="mono">${escapeHtml(d.deviceId)}</td>
+            // Devices tab with red highlight for disconnected devices
+            document.getElementById('devicesTable').innerHTML = devices.map(d => {
+                const disconnected = isDeviceDisconnected(d.lastSeen);
+                const rowClass = disconnected ? 'device-disconnected' : '';
+                const statusIcon = disconnected ? '🔴' : '🟢';
+                return `
+                <tr class="${rowClass}">
+                    <td class="mono">${statusIcon} ${escapeHtml(d.deviceId)}</td>
                     <td>${escapeHtml(d.hostname)}</td>
                     <td>${escapeHtml(d.user)}</td>
                     <td>${escapeHtml(d.osVersion)}</td>
                     <td>${escapeHtml(d.agentVersion)}</td>
                     <td>${formatTime(d.lastSeen)}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="6" class="empty-state">No devices registered</td></tr>';
+                `;
+            }).join('') || '<tr><td colspan="6" class="empty-state">No devices registered</td></tr>';
         }
 
         // Alerts

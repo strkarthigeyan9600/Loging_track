@@ -15,15 +15,15 @@ namespace LogSystem.Dashboard.Controllers;
 public class LogIngestionController : ControllerBase
 {
     private readonly InMemoryStore _store;
-    private readonly FirestoreService _firestore;
+    private readonly FirestoreService? _firestore;
     private readonly ILogger<LogIngestionController> _logger;
     private readonly IConfiguration _configuration;
 
     public LogIngestionController(
         InMemoryStore store,
-        FirestoreService firestore,
         ILogger<LogIngestionController> logger,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        FirestoreService? firestore = null)
     {
         _store = store;
         _firestore = firestore;
@@ -151,32 +151,35 @@ public class LogIngestionController : ControllerBase
         _logger.LogInformation("Ingested {Count} events from device {DeviceId} (in-memory OK)", total, batch.DeviceId);
 
         // ── Step 2: Persist to Firestore in background (best-effort) ──
-        _ = Task.Run(async () =>
+        if (_firestore != null)
         {
-            try
+            _ = Task.Run(async () =>
             {
-                if (deviceEntity != null)
-                    await _firestore.UpsertDeviceAsync(deviceEntity);
+                try
+                {
+                    if (deviceEntity != null)
+                        await _firestore.UpsertDeviceAsync(deviceEntity);
 
-                foreach (var chunk in Chunk(fileEntities, 450))
-                    await _firestore.AddFileEventsBatchAsync(chunk);
+                    foreach (var chunk in Chunk(fileEntities, 450))
+                        await _firestore.AddFileEventsBatchAsync(chunk);
 
-                foreach (var chunk in Chunk(netEntities, 450))
-                    await _firestore.AddNetworkEventsBatchAsync(chunk);
+                    foreach (var chunk in Chunk(netEntities, 450))
+                        await _firestore.AddNetworkEventsBatchAsync(chunk);
 
-                foreach (var chunk in Chunk(appEntities, 450))
-                    await _firestore.AddAppUsageEventsBatchAsync(chunk);
+                    foreach (var chunk in Chunk(appEntities, 450))
+                        await _firestore.AddAppUsageEventsBatchAsync(chunk);
 
-                foreach (var chunk in Chunk(alertEntities, 450))
-                    await _firestore.AddAlertEventsBatchAsync(chunk);
+                    foreach (var chunk in Chunk(alertEntities, 450))
+                        await _firestore.AddAlertEventsBatchAsync(chunk);
 
-                _logger.LogDebug("Firestore sync OK for batch from {DeviceId}", batch.DeviceId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Firestore sync failed for batch from {DeviceId} (data preserved in-memory)", batch.DeviceId);
-            }
-        });
+                    _logger.LogDebug("Firestore sync OK for batch from {DeviceId}", batch.DeviceId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Firestore sync failed for batch from {DeviceId} (data preserved in-memory)", batch.DeviceId);
+                }
+            });
+        }
 
         // Return success immediately — data is in memory
         return Task.FromResult<IActionResult>(Ok(new { received = total }));
